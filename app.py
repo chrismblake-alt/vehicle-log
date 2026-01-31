@@ -11,33 +11,97 @@ st.set_page_config(
 # Google Sheet URL - public CSV export
 SHEET_ID = "1wu21NBekBxmPlhyh6dcIS-ANnUEupuZnn0hQtyNX6tA"
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv"
+MAINTENANCE_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid=338560830"
 
-@st.cache_data(ttl=60)  # Cache for 60 seconds
+# Oil change thresholds (in miles)
+OIL_CHANGE_INTERVAL = 5000
+WARNING_THRESHOLD = 4000  # Yellow at 4000 miles
+OVERDUE_THRESHOLD = 5000  # Red at 5000 miles
+
+@st.cache_data(ttl=60)
 def load_data():
-    """Load data from Google Sheet"""
+    """Load checkout data from Google Sheet"""
     try:
         df = pd.read_csv(CSV_URL)
-        # Rename columns for easier handling
         df.columns = [
             'checkout_time', 'vehicle', 'first_name', 'last_name', 
             'mileage', 'destination', 'expected_back', 'email', 'submission_id'
         ]
-        # Parse datetime
         df['checkout_time'] = pd.to_datetime(df['checkout_time'], errors='coerce')
-        # Combine name
         df['staff_name'] = df['first_name'].fillna('') + ' ' + df['last_name'].fillna('')
         df['staff_name'] = df['staff_name'].str.strip()
-        # Sort by most recent
+        df['mileage'] = pd.to_numeric(df['mileage'], errors='coerce')
         df = df.sort_values('checkout_time', ascending=False)
         return df
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=60)
+def load_maintenance():
+    """Load maintenance data from Google Sheet"""
+    try:
+        df = pd.read_csv(MAINTENANCE_URL)
+        df.columns = ['vehicle', 'date', 'mileage', 'service_type']
+        df['date'] = pd.to_datetime(df['date'], errors='coerce')
+        df['mileage'] = pd.to_numeric(df['mileage'], errors='coerce')
+        return df
+    except Exception as e:
+        st.error(f"Error loading maintenance data: {e}")
+        return pd.DataFrame()
+
+def get_oil_change_status(vehicle, current_mileage, maintenance_df):
+    """Get oil change status for a vehicle"""
+    # Filter for oil changes for this vehicle
+    vehicle_oil = maintenance_df[
+        (maintenance_df['vehicle'] == vehicle) & 
+        (maintenance_df['service_type'].str.lower().str.contains('oil', na=False))
+    ]
+    
+    if vehicle_oil.empty or pd.isna(current_mileage):
+        return {
+            'status': 'unknown',
+            'color': '⚪',
+            'message': 'No oil change on record',
+            'miles_since': None,
+            'last_mileage': None
+        }
+    
+    # Get most recent oil change
+    last_oil_change = vehicle_oil.sort_values('mileage', ascending=False).iloc[0]
+    last_mileage = last_oil_change['mileage']
+    miles_since = current_mileage - last_mileage
+    
+    if miles_since >= OVERDUE_THRESHOLD:
+        return {
+            'status': 'overdue',
+            'color': '🔴',
+            'message': f'{int(miles_since):,} miles since oil change - OVERDUE',
+            'miles_since': miles_since,
+            'last_mileage': last_mileage
+        }
+    elif miles_since >= WARNING_THRESHOLD:
+        return {
+            'status': 'warning',
+            'color': '🟡',
+            'message': f'{int(miles_since):,} miles since oil change - Due soon',
+            'miles_since': miles_since,
+            'last_mileage': last_mileage
+        }
+    else:
+        return {
+            'status': 'good',
+            'color': '🟢',
+            'message': f'{int(miles_since):,} miles since oil change',
+            'miles_since': miles_since,
+            'last_mileage': last_mileage
+        }
+
 st.title("🚗 Vehicle Checkout Log")
 
 # Load data
 df = load_data()
+maintenance_df = load_maintenance()
 
 if df.empty:
     st.warning("No checkout data found. Make sure the Google Sheet is shared publicly.")
@@ -57,26 +121,41 @@ st.subheader("Current Vehicle Status")
 
 vehicles = df['vehicle'].dropna().unique()
 
-status_cols = st.columns(len(vehicles) if len(vehicles) > 0 else 1)
-
-for i, vehicle in enumerate(vehicles):
+for vehicle in vehicles:
     vehicle_df = df[df['vehicle'] == vehicle]
     if not vehicle_df.empty:
         last_checkout = vehicle_df.iloc[0]
         checkout_time = last_checkout['checkout_time']
+        current_mileage = last_checkout['mileage']
         
-        # Determine if likely still out
-        hours_ago = (datetime.now() - checkout_time).total_seconds() / 3600 if pd.notna(checkout_time) else 0
+        # Get oil change status
+        oil_status = get_oil_change_status(vehicle, current_mileage, maintenance_df)
         
-        with status_cols[i]:
-            st.markdown(f"**{vehicle}**")
-            st.caption(f"Last checkout: {checkout_time.strftime('%m/%d %I:%M %p') if pd.notna(checkout_time) else 'Unknown'}")
-            st.write(f"**{last_checkout['staff_name']}**")
-            st.caption(f"→ {last_checkout['destination']}")
-            if pd.notna(last_checkout['expected_back']):
-                st.caption(f"Expected: {last_checkout['expected_back']}")
-
-st.divider()
+        with st.container():
+            col1, col2, col3 = st.columns([2, 2, 2])
+            
+            with col1:
+                st.markdown(f"### {vehicle}")
+                st.caption(f"Last checkout: {checkout_time.strftime('%m/%d %I:%M %p') if pd.notna(checkout_time) else 'Unknown'}")
+                st.write(f"**{last_checkout['staff_name']}** → {last_checkout['destination']}")
+                if pd.notna(last_checkout['expected_back']):
+                    st.caption(f"Expected back: {last_checkout['expected_back']}")
+            
+            with col2:
+                if pd.notna(current_mileage):
+                    st.metric("Current Mileage", f"{int(current_mileage):,}")
+                else:
+                    st.metric("Current Mileage", "Not recorded")
+            
+            with col3:
+                st.markdown(f"**Oil Change Status**")
+                st.markdown(f"{oil_status['color']} {oil_status['message']}")
+                if oil_status['miles_since'] is not None:
+                    miles_remaining = OVERDUE_THRESHOLD - oil_status['miles_since']
+                    if miles_remaining > 0:
+                        st.caption(f"{int(miles_remaining):,} miles until due")
+            
+            st.divider()
 
 # --- Filters ---
 st.subheader("Checkout History")
@@ -135,12 +214,27 @@ st.caption(f"Showing {len(display_df)} entries")
 
 st.divider()
 
+# --- Maintenance History ---
+st.subheader("Maintenance History")
+
+if not maintenance_df.empty:
+    maintenance_display = maintenance_df.sort_values('date', ascending=False).copy()
+    maintenance_display.columns = ['Vehicle', 'Date', 'Mileage', 'Service Type']
+    st.dataframe(
+        maintenance_display,
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.info("No maintenance records yet. Add entries to the Maintenance tab in your Google Sheet.")
+
+st.divider()
+
 # --- Quick Stats ---
 st.subheader("Quick Stats")
 
 col1, col2, col3, col4 = st.columns(4)
 
-# Stats for selected time period
 with col1:
     st.metric("Total Checkouts", len(filtered_df))
 
@@ -156,7 +250,6 @@ with col3:
         st.metric("Most Used", "N/A")
 
 with col4:
-    # Checkouts this week
     week_ago = datetime.now() - timedelta(days=7)
     this_week = df[df['checkout_time'] >= week_ago]
     st.metric("This Week", len(this_week))
