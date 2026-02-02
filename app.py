@@ -25,7 +25,7 @@ def load_data():
         df = pd.read_csv(CSV_URL)
         df.columns = [
             'checkout_time', 'vehicle', 'first_name', 'last_name', 
-            'mileage', 'destination', 'expected_back', 'email', 'submission_id', 'uc_program'
+            'mileage', 'destination', 'expected_back', 'email', 'uc_program', 'submission_id'
         ]
         df['checkout_time'] = pd.to_datetime(df['checkout_time'], errors='coerce')
         df['staff_name'] = df['first_name'].fillna('') + ' ' + df['last_name'].fillna('')
