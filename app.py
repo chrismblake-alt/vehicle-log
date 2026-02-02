@@ -25,12 +25,15 @@ def load_data():
         df = pd.read_csv(CSV_URL)
         df.columns = [
             'checkout_time', 'vehicle', 'first_name', 'last_name', 
-            'mileage', 'destination', 'expected_back', 'email', 'submission_id'
+            'mileage', 'destination', 'expected_back', 'email', 'submission_id', 'uc_program'
         ]
         df['checkout_time'] = pd.to_datetime(df['checkout_time'], errors='coerce')
         df['staff_name'] = df['first_name'].fillna('') + ' ' + df['last_name'].fillna('')
         df['staff_name'] = df['staff_name'].str.strip()
         df['mileage'] = pd.to_numeric(df['mileage'], errors='coerce')
+        # Clean up UC Program field
+        df['uc_program'] = df['uc_program'].fillna('').astype(str).str.strip()
+        df['is_uc'] = df['uc_program'].str.lower().isin(['yes', 'true', 'uc program trip', 'uc program trip?', 'checked', '1', 'x'])
         df = df.sort_values('checkout_time', ascending=False)
         return df
     except Exception as e:
@@ -160,7 +163,7 @@ for vehicle in vehicles:
 # --- Filters ---
 st.subheader("Checkout History")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     vehicle_filter = st.selectbox(
@@ -184,6 +187,13 @@ with col3:
         index=0
     )
 
+with col4:
+    uc_filter = st.selectbox(
+        "UC Program",
+        options=["All Trips", "UC Program Only", "Non-UC Only"],
+        index=0
+    )
+
 # Apply filters
 filtered_df = df.copy()
 
@@ -200,9 +210,15 @@ elif date_range == "Last 30 days":
     cutoff = datetime.now() - timedelta(days=30)
     filtered_df = filtered_df[filtered_df['checkout_time'] >= cutoff]
 
+if uc_filter == "UC Program Only":
+    filtered_df = filtered_df[filtered_df['is_uc'] == True]
+elif uc_filter == "Non-UC Only":
+    filtered_df = filtered_df[filtered_df['is_uc'] == False]
+
 # Display table
-display_df = filtered_df[['checkout_time', 'vehicle', 'staff_name', 'destination', 'mileage', 'expected_back']].copy()
-display_df.columns = ['Checkout Time', 'Vehicle', 'Staff', 'Destination', 'Mileage', 'Expected Back']
+display_df = filtered_df[['checkout_time', 'vehicle', 'staff_name', 'destination', 'mileage', 'expected_back', 'is_uc']].copy()
+display_df['is_uc'] = display_df['is_uc'].apply(lambda x: '✓' if x else '')
+display_df.columns = ['Checkout Time', 'Vehicle', 'Staff', 'Destination', 'Mileage', 'Expected Back', 'UC']
 
 st.dataframe(
     display_df,
@@ -211,6 +227,39 @@ st.dataframe(
 )
 
 st.caption(f"Showing {len(display_df)} entries")
+
+# Export UC Program trips
+if uc_filter == "UC Program Only" or st.checkbox("Show UC Program Export"):
+    st.subheader("📋 UC Program Export")
+    
+    uc_trips = df[df['is_uc'] == True].copy()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        export_start = st.date_input("Start date", value=datetime.now() - timedelta(days=365))
+    with col2:
+        export_end = st.date_input("End date", value=datetime.now())
+    
+    # Filter by date range
+    uc_trips = uc_trips[
+        (uc_trips['checkout_time'] >= pd.to_datetime(export_start)) &
+        (uc_trips['checkout_time'] <= pd.to_datetime(export_end) + timedelta(days=1))
+    ]
+    
+    export_df = uc_trips[['checkout_time', 'vehicle', 'staff_name', 'destination', 'mileage']].copy()
+    export_df.columns = ['Date', 'Vehicle', 'Staff', 'Destination', 'Mileage']
+    
+    st.write(f"**{len(export_df)} UC Program trips** from {export_start} to {export_end}")
+    st.dataframe(export_df, use_container_width=True, hide_index=True)
+    
+    # Download button
+    csv = export_df.to_csv(index=False)
+    st.download_button(
+        label="📥 Download CSV for Audit",
+        data=csv,
+        file_name=f"UC_Program_Trips_{export_start}_to_{export_end}.csv",
+        mime="text/csv"
+    )
 
 st.divider()
 
@@ -250,6 +299,5 @@ with col3:
         st.metric("Most Used", "N/A")
 
 with col4:
-    week_ago = datetime.now() - timedelta(days=7)
-    this_week = df[df['checkout_time'] >= week_ago]
-    st.metric("This Week", len(this_week))
+    uc_count = df[df['is_uc'] == True]
+    st.metric("UC Program Trips", len(uc_count))
