@@ -33,7 +33,7 @@ def load_data():
         df['mileage'] = pd.to_numeric(df['mileage'], errors='coerce')
         # Clean up UC Program field
         df['uc_program'] = df['uc_program'].fillna('').astype(str).str.strip()
-        df['is_uc'] = df['uc_program'].str.lower().isin(['yes', 'true', 'uc program trip', 'uc program trip?', 'checked', '1', 'x'])
+        df['is_uc'] = df['uc_program'].str.lower().str.contains('yes', na=False)
         df = df.sort_values('checkout_time', ascending=False)
         return df
     except Exception as e:
